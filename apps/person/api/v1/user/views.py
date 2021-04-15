@@ -170,13 +170,13 @@ class UserApiView(viewsets.ViewSet):
             raise NotAcceptable(
                 detail=_("You has loggedin as {}".format(user.username)))
 
-        serializer = CreateUserSerializer(
-            data=request.data, context=self._context)
+        serializer = CreateUserSerializer(data=request.data,
+                                          context=self._context)
         if serializer.is_valid(raise_exception=True):
             try:
                 serializer.save()
             except ValidationError as e:
-                return Response({'detail': e.message}, status=response_status.HTTP_406_NOT_ACCEPTABLE)
+                return Response({'detail': e}, status=response_status.HTTP_403_FORBIDDEN)
             return Response(serializer.data, status=response_status.HTTP_201_CREATED)
         return Response(serializer.errors, status=response_status.HTTP_400_BAD_REQUEST)
 
@@ -485,6 +485,15 @@ class UserApiView(viewsets.ViewSet):
 
         # set password
         user.set_password(retype_password)
+
+        # mark email verified
+        if verifycode_email:
+            user.is_email_verified = True
+
+        # mark msisdn verified
+        if verifycode_msisdn:
+            user.is_msisdn_verified = True
+
         user.save()
 
         return Response({'detail': _("Password berhasil diperbarui. "
@@ -570,6 +579,8 @@ class TokenObtainPairViewExtend(TokenObtainPairView):
 
         try:
             serializer.is_valid(raise_exception=True)
+        except ValueError as e:
+            raise DRFValidationError(str(e))
         except TokenError as e:
             raise InvalidToken(e.args[0])
 

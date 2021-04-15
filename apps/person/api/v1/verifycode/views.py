@@ -1,6 +1,7 @@
 from django.db import transaction
+from django.db.models import Q
 from django.views.decorators.cache import never_cache
-from django.core.exceptions import ValidationError, ObjectDoesNotExist
+from django.core.exceptions import MultipleObjectsReturned, ValidationError, ObjectDoesNotExist
 from django.utils.decorators import method_decorator
 from django.utils.translation import ugettext_lazy as _
 
@@ -8,7 +9,7 @@ from rest_framework import status as response_status, viewsets
 from rest_framework.decorators import action
 from rest_framework.permissions import AllowAny
 from rest_framework.response import Response
-from rest_framework.exceptions import NotFound, NotAcceptable
+from rest_framework.exceptions import NotFound, ValidationError as DRFValidationError
 
 from utils.validators import csrf_protect_drf
 from utils.generals import get_model
@@ -121,7 +122,7 @@ class VerifyCodeApiView(viewsets.ViewSet):
             obj = self._queryset.select_for_update() \
                 .unverified_unused(**request.data, passcode=_passcode)
         except ObjectDoesNotExist:
-            raise NotAcceptable(
+            raise DRFValidationError(
                 detail=_("Kode verifikasi salah atau kedaluwarsa"))
 
         # Generate token and uidb64 for password recovery
@@ -142,6 +143,12 @@ class VerifyCodeApiView(viewsets.ViewSet):
                     'password_token': password_token,
                     'password_uidb64': password_uidb64
                 })
+            else:
+                # OPS! if token and uidb64 None
+                # that indicate user with email or msisdn not registered
+                # so stop here
+                raise DRFValidationError(
+                    detail=_("User tidak ditemukan"))
 
         serializer = ValidateVerifyCodeSerializer(
             obj, data=request.data, partial=True, context=self._context)
@@ -153,3 +160,39 @@ class VerifyCodeApiView(viewsets.ViewSet):
 
             return Response(serializer.data, status=response_status.HTTP_200_OK)
         return Response(serializer.errors, status=response_status.HTTP_400_BAD_REQUEST)
+
+    # Sub-action check email or msisdn validated
+    @method_decorator(never_cache)
+    @transaction.atomic
+    @action(methods=['post'], detail=False, permission_classes=[AllowAny],
+            url_path='check', url_name='check')
+    def check(self, request):
+        """
+        Params:
+
+            {
+                "email": "me@email.com",
+                "msisdn": "02857272",
+                "challenge": "whatever"
+            }
+        """
+        email = request.data.get('email')
+        msisdn = request.data.get('msisdn')
+        challenge = request.data.get('challenge')
+
+        if 'email' in request.data and 'msisdn' in request.data:
+            raise DRFValidationError(
+                detail=_("Can't use both email and msisdn"))
+
+        obtain = email or msisdn
+
+        try:
+            self._queryset.get(Q(email=obtain) | Q(msisdn=obtain),
+                               Q(is_verified=True), Q(is_used=True),
+                               Q(challenge=challenge))
+        except MultipleObjectsReturned as e:
+            raise DRFValidationError(str(e))
+        except ObjectDoesNotExist:
+            raise DRFValidationError(
+                detail=_("{} not validated".format(obtain)))
+        return Response({'detail': _("{} has validated")}, status=response_status.HTTP_200_OK)

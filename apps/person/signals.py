@@ -58,30 +58,15 @@ def verifycode_save_handler(sender, instance, created, **kwargs):
                 'passcode': getattr(instance, 'passcode', None)
             }
             # send_verifycode_email.delay(data) # with celery
-            send_verifycode_email(data)  # without celery
+            # send_verifycode_email(data)  # without celery
 
         # mark oldest VerifyCode as expired
+        obtain = instance.msisdn or instance.email
         cls = instance.__class__
-        default = (
-            Q(email=Case(When(email__isnull=False, then=Value(instance.email))))
-            | Q(msisdn=Case(When(msisdn__isnull=False, then=Value(instance.msisdn))))
-        )
-
         oldest = cls.objects \
             .filter(
                 Q(challenge=instance.challenge),
-                Q(
-                    challenge=Case(
-                        When(
-                            Q(challenge=cls.ChallengeType.PASSWORD_RECOVERY)
-                            | Q(challenge=cls.ChallengeType.USERNAME_RECOVERY)
-                        ),
-                        then=Q(msisdn=instance.msisdn) & Q(
-                            email=instance.email),
-                        default=default,
-                        output_field=Q()
-                    )
-                ),
+                Q(email=obtain) | Q(msisdn=obtain),
                 Q(is_used=False), Q(is_expired=False)
             ).exclude(passcode=instance.passcode)
 

@@ -6,10 +6,11 @@ from django.utils.text import slugify
 from django.core.exceptions import ObjectDoesNotExist, ValidationError
 from django.core.validators import EmailValidator
 
-from rest_framework import serializers
-from rest_framework.exceptions import NotAcceptable
+from rest_framework import serializers, status as response_status
+from rest_framework.exceptions import NotAcceptable, NotAuthenticated
 
 from utils.generals import create_unique_id, get_model
+from apps.person.api.serializers import ModelSerializerWithClean
 from apps.person.api.validator import (
     EmailDuplicateValidator,
     MsisdnDuplicateValidator,
@@ -112,7 +113,7 @@ class ValidateUserSerializer(object):
                         .verified_unused(email=value, token=verifycode_token,
                                          challenge=VerifyCode.ChallengeType.VALIDATE_EMAIL)
                 except ObjectDoesNotExist:
-                    raise serializers.ValidationError(error_message)
+                    raise NotAuthenticated(detail=error_message)
         return value
 
     def validate_msisdn(self, value):
@@ -134,7 +135,7 @@ class ValidateUserSerializer(object):
                         .verified_unused(msisdn=value, token=verifycode_token,
                                          challenge=VerifyCode.ChallengeType.VALIDATE_MSISDN)
                 except ObjectDoesNotExist:
-                    raise serializers.ValidationError(error_message)
+                    raise NotAuthenticated(detail=error_message)
         return value
 
     def validate_password(self, value):
@@ -145,27 +146,35 @@ class ValidateUserSerializer(object):
         return value
 
 
-class CreateUserSerializer(BaseUserSerializer, ValidateUserSerializer):
+class CreateUserSerializer(BaseUserSerializer):
     def validate(self, data):
+        print(data)
+        validated_data = super().validate(data)
+        print(validated_data)
+        ModelClass = self.Meta.model
+        instance = ModelClass._default_manager.create(**validated_data)
+
+        raise serializers.ValidationError(detail=_("Password tidak sama"))
         # can't use both email and msisdn
         if 'email' in data and 'msisdn' in data:
-            raise NotAcceptable(_("Can't use both email and msisdn"))
-        return super().validate(data)
+            raise serializers.ValidationError(
+                detail=_("Can't use both email and msisdn"))
+        return validated_data
 
     def get_extra_kwargs(self):
         kwargs = super().get_extra_kwargs()
 
-        # use msisdn, set email not required
-        if settings.STRICT_MSISDN and 'msisdn' not in self.initial_data:
+        if settings.STRICT_MSISDN:
             kwargs['msisdn']['required'] = True
+
             # check duplicate
             if settings.STRICT_MSISDN_DUPLICATE:
                 kwargs['msisdn']['validators'].append(
                     MsisdnDuplicateValidator())
 
-        # use email, set msisdn not required
-        if settings.STRICT_EMAIL and 'email' not in self.initial_data:
+        if settings.STRICT_EMAIL:
             kwargs['email']['required'] = True
+
             # check duplicate
             if settings.STRICT_EMAIL_DUPLICATE:
                 kwargs['email']['validators'].append(EmailDuplicateValidator())
@@ -190,24 +199,28 @@ class CreateUserSerializer(BaseUserSerializer, ValidateUserSerializer):
         # create username from first_name
         if 'username' not in data:
             ret['username'] = '{}{}'.format(
-                create_unique_id(2), slugify(data.get('first_name')))
+                slugify(data.get('first_name')), create_unique_id(2))
         return ret
 
     @transaction.atomic
     def create(self, validated_data):
         try:
-            user = get_user_model().objects.create_user(**validated_data)
-        except (IntegrityError, TypeError) as e:
+            instance = get_user_model().objects.create_user(**validated_data)
+        except (IntegrityError, TypeError, ValueError) as e:
             raise ValidationError(str(e))
 
         # mark verifycode as used
         if self._verifycode_obj:
             self._verifycode_obj.mark_used()
 
-            # mark email verified
-            user.is_email_verified = True
-            user.save(update_fields=['is_email_verified'])
-        return user
+            # mark verified
+            if self._verifycode_obj.email is not None:
+                instance.mark_email_verified()
+
+            if self._verifycode_obj.msisdn is not None:
+                instance.mark_msisdn_verified()
+
+        return instance
 
 
 class UpdateUserSerializer(BaseUserSerializer, ValidateUserSerializer):

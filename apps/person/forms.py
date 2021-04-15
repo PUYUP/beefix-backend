@@ -8,7 +8,6 @@ User = get_user_model()
 
 class UserChangeFormExtend(UserChangeForm):
     """ Override user Edit form """
-    email = forms.EmailField(max_length=254, help_text=_("Required. Inform a valid email address"))
 
     def clean_email(self):
         email = self.cleaned_data.get('email', None)
@@ -18,13 +17,13 @@ class UserChangeFormExtend(UserChangeForm):
         if email:
             # Validate each user has different email
             if User.objects.filter(email=email).exclude(username=username).exists():
-                raise forms.ValidationError(_("Email {email} already registered.".format(email=email)))
+                raise forms.ValidationError(
+                    _("Email {email} already registered.".format(email=email)))
         return email
 
 
 class UserCreationFormExtend(UserCreationForm):
     """ Override user Add form """
-    email = forms.EmailField(max_length=254, help_text=_("Required. Inform a valid email address"))
 
     def clean_email(self):
         email = self.cleaned_data.get('email', None)

@@ -1,4 +1,5 @@
 from django.shortcuts import redirect
+from django.conf import settings
 from django.urls import reverse
 from django.contrib.auth.backends import ModelBackend
 from django.db.models import Q
@@ -13,6 +14,7 @@ User = get_user_model()
 
 class CurrentUserDefault:
     """Return current logged-in user"""
+
     def set_context(self, serializer_field):
         user = serializer_field.context['request'].user
         self.user = user
@@ -26,28 +28,31 @@ class CurrentUserDefault:
 
 class LoginBackend(ModelBackend):
     """Login w/h username or email"""
+
     def authenticate(self, request, username=None, password=None, **kwargs):
         if username is None:
             username = kwargs.get(User.USERNAME_FIELD)
 
+        obtain = Q(username__iexact=username) \
+            | (Q(email__iexact=username) & Q(is_email_verified=settings.STRICT_EMAIL_VERIFIED)) \
+            | (Q(msisdn__iexact=username) & Q(is_msisdn_verified=settings.STRICT_MSISDN_VERIFIED))
+
         try:
             # user = User._default_manager.get_by_natural_key(username)
             # You can customise what the given username is checked against, here I compare to both username and email fields of the User model
-            user = User.objects \
-                .filter(
-                    Q(username__iexact=username)
-                    | Q(email__iexact=username)
-                    | Q(msisdn__iexact=username) & Q(is_msisdn_verified=True))
+            user = User.objects.filter(obtain)
         except User.DoesNotExist:
             # Run the default password tokener once to reduce the timing
             # difference between an existing and a nonexistent user (#20760).
             User().set_password(password)
         else:
             try:
-                user = user.get(
-                    Q(username__iexact=username) 
-                    | Q(email__iexact=username)
-                    | Q(msisdn__iexact=username) & Q(is_msisdn_verified=True))
+                user = user.get(obtain)
+            except User.MultipleObjectsReturned:
+                message = _(
+                    "User {} more than one. "
+                    "If is you, login and verify your account".format(username))
+                raise ValueError(message)
             except User.DoesNotExist:
                 return None
 
@@ -58,6 +63,7 @@ class LoginBackend(ModelBackend):
 
 class GuestRequiredMixin:
     """Verify that the current user guest."""
+
     def dispatch(self, request, *args, **kwargs):
         if request.user.is_authenticated:
             return redirect(reverse('home'))
